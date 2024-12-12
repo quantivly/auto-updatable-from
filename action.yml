@@ -1,0 +1,109 @@
+name: "Check auto_updatable_from"
+description: "Extracts and validates the auto_updatable_from version."
+
+inputs:
+  working-directory:
+    description: "The root directory of the repository."
+    required: false
+    default: "${{ github.workspace }}"
+
+outputs:
+  version:
+    description: "The extracted auto_updatable_from version."
+    value: ${{ steps.validate_versions.outputs.version }}
+
+runs:
+  using: "composite"
+  steps:
+      # yq is used to extract the auto_updatable_from value from the pyproject.toml file.
+    - name: Install yq
+      shell: bash
+      run: |
+        if ! command -v yq &> /dev/null; then
+          sudo snap install yq
+        fi
+
+    - name: Extract from pyproject.toml
+      id: extract_pyproject
+      shell: bash
+      env:
+        INPUT_WORKING_DIRECTORY: ${{ inputs.working-directory }}
+      run: |
+        FILE="$INPUT_WORKING_DIRECTORY/pyproject.toml"
+        echo "Searching for pyproject.toml file in $FILE..."
+        if [[ -f "$FILE" ]]; then
+          echo "pyproject.toml file found!"
+          VERSION=$(yq eval '.project.auto_updatable_from' "$FILE")
+          if [[ -n "$VERSION" && "$VERSION" != "null" ]]; then
+            echo "auto_updatable_from successfully parsed as $VERSION from pyproject.toml."
+            echo "AUTO_UPDATABLE_FROM_PYPROJECT=$VERSION" >> $GITHUB_ENV
+          else
+            echo "auto_updatable_from could not be read from pyproject.toml."
+          fi
+        else
+          echo "No pyproject.toml file found."
+        fi
+
+    - name: Extract from package.json
+      id: extract_packagejson
+      shell: bash
+      env:
+        INPUT_WORKING_DIRECTORY: ${{ inputs.working-directory }}
+      run: |
+        FILE="$INPUT_WORKING_DIRECTORY/package.json"
+        echo "Searching for package.json file in $FILE..."
+        if [[ -f "$FILE" ]]; then
+          echo "package.json file found!"
+          VERSION=$(jq -r '.autoUpdatableFrom' "$FILE")
+          if [[ -n "$VERSION" && "$VERSION" != "null" ]]; then
+            echo "auto_updatable_from successfully parsed as $VERSION from package.json."
+            echo "AUTO_UPDATABLE_FROM_PACKAGEJSON=$VERSION" >> $GITHUB_ENV
+          else
+            echo "auto_updatable_from could not be read from package.json."
+          fi
+        else
+          echo "No package.json file found."
+        fi
+
+    - name: Extract from .q file
+      id: extract_q_file
+      shell: bash
+      env:
+        INPUT_WORKING_DIRECTORY: ${{ inputs.working-directory }}
+      run: |
+        FILE="$INPUT_WORKING_DIRECTORY/.q"
+        echo "Searching for a .q configuration file in $FILE..."
+        if [[ -f "$FILE" ]]; then
+          echo ".q file found!"
+          VERSION=$(grep -E '^auto_updatable_from=[0-9]+\.[0-9]+\.[0-9]+$' "$FILE" | cut -d'=' -f2)
+          if [[ -n "$VERSION" ]]; then
+            echo "auto_updatable_from successfully parsed as $VERSION from .q file."
+            echo "AUTO_UPDATABLE_FROM_Q=$VERSION" >> $GITHUB_ENV
+          else
+            echo "auto_updatable_from could not be read from .q file."
+          fi
+        else
+          echo "No .q file found."
+        fi
+
+    - name: Validate versions
+      id: validate_versions
+      shell: bash
+      run: |
+        echo "Validating auto_updatable_from configuration..."
+        declare -a VERSIONS
+        [[ -n "$AUTO_UPDATABLE_FROM_PYPROJECT" ]] && VERSIONS+=("$AUTO_UPDATABLE_FROM_PYPROJECT")
+        [[ -n "$AUTO_UPDATABLE_FROM_PACKAGEJSON" ]] && VERSIONS+=("$AUTO_UPDATABLE_FROM_PACKAGEJSON")
+        [[ -n "$AUTO_UPDATABLE_FROM_Q" ]] && VERSIONS+=("$AUTO_UPDATABLE_FROM_Q")
+
+        UNIQUE_VERSIONS=($(echo "${VERSIONS[@]}" | tr ' ' '\n' | sort -u | tr '\n' ' '))
+        if [[ ${#UNIQUE_VERSIONS[@]} -eq 0 ]]; then
+          echo "Error: auto_updatable_from version not found." >&2
+          exit 1
+        elif [[ ${#UNIQUE_VERSIONS[@]} -gt 1 ]]; then
+          echo "Error: Conflicting auto_updatable_from versions found: ${UNIQUE_VERSIONS[*]}" >&2
+          exit 1
+        else
+          echo "auto_updatable_from configuration successfully validated as ${UNIQUE_VERSIONS[0]}"
+          echo "version=${UNIQUE_VERSIONS[0]}" >> $GITHUB_OUTPUT
+        fi
